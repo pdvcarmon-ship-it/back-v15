@@ -16,7 +16,6 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 import logging
-from scipy.ndimage import generic_filter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -661,28 +660,27 @@ function evaluatePixel(sample) {
     pixel_area_m2_real = bbox_area_m2 / total_pixels
     logger.info(f"bbox área: {bbox_area_m2:.1f}m², píxel real: {pixel_area_m2_real:.2f}m²")
 
-    # Interpolar píxeles sin datos (-999) usando vecinos válidos
+    # Interpolar píxeles sin datos (-999) usando vecinos válidos - numpy puro
     sin_datos = ndvi_arr <= -999
     if sin_datos.any() and (~sin_datos).any():
-        # Para cada píxel sin datos, calcular la media de vecinos válidos (ventana 5x5)
-        def rellenar_con_vecinos(values):
-            centro = values[len(values) // 2]
-            if centro > -999:
-                return centro
-            validos = values[values > -999]
-            return float(validos.mean()) if len(validos) > 0 else centro
-
-        ndvi_rellenado = generic_filter(
-            ndvi_arr,
-            rellenar_con_vecinos,
-            size=5,
-            mode='nearest'
-        )
-        # Solo aplicar el relleno donde había datos inválidos
-        ndvi_arr = np.where(sin_datos, ndvi_rellenado, ndvi_arr)
-        # Actualizar máscara de sin_datos
+        ndvi_temp = ndvi_arr.copy()
+        # Hacer hasta 3 pasadas para rellenar huecos progresivamente
+        for _ in range(3):
+            sin_datos_iter = ndvi_temp <= -999
+            if not sin_datos_iter.any():
+                break
+            # Desplazamientos en las 8 direcciones
+            for dy, dx in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
+                shifted = np.roll(np.roll(ndvi_temp, dy, axis=0), dx, axis=1)
+                # Rellenar píxeles inválidos con vecino válido
+                mask_fill = sin_datos_iter & (shifted > -999)
+                ndvi_temp[mask_fill] = shifted[mask_fill]
+                sin_datos_iter = ndvi_temp <= -999
+                if not sin_datos_iter.any():
+                    break
+        ndvi_arr = ndvi_temp
         sin_datos = ndvi_arr <= -999
-        logger.info(f"Píxeles interpolados: {sin_datos.sum()} restantes sin datos")
+        logger.info(f"Píxeles interpolados. Restantes sin datos: {sin_datos.sum()}")
 
     # Crear imagen coloreada por zonas
     h, w = ndvi_arr.shape
